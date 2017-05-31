@@ -1,0 +1,101 @@
+#!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+"""
+Created on Thu May 18 12:08:28 2017
+
+@author: wanjun
+"""
+#%%
+import pandas as pd
+import numpy as np
+import datetime
+from sklearn import preprocessing
+import talib
+from matplotlib import pyplot as plt
+import sys
+from scipy import optimize
+#%%
+file='/Users/wanjun/Desktop/LSTM模型/bar_2016_zhuli_IF.csv'
+data=pd.read_csv(file)
+del data['Unnamed: 0']
+data.time=data.time.astype(np.datetime64)
+data.set_index('time',inplace=True)
+day=data.resample('D').mean().dropna().index
+#%%
+#分析数据
+df_len=pd.DataFrame(index=day,columns=['length'])
+for i in day:
+    i=str(i)[:10]
+    df=data.ix[i]
+    df_len.ix[i].length=len(df)
+#1月4日和1月7日缺失数据比较多，删除1月7日之前的数据
+data=data.ix['2016-01-08':]
+df_len=df_len[4:]
+day=day[4:]
+#%%
+#给每一天打标签
+#保存图片后使用手工打标签的方法
+
+for i in day:
+    fig=plt.figure()
+    ax=fig.add_subplot(1,1,1)
+    i=str(i)[:10]
+    arrclose=np.array(data.ix[i].close)
+    ema=talib.EMA(arrclose,timeperiod=30)
+    ax.plot(ema)
+    ax.axvline(120)
+    sys.stdout.flush()
+    name=i+'.png'
+    fig.savefig('/Users/wanjun/Desktop/time/picture/'+name)
+#%%
+#打标签
+#三种势
+def f_1(x,A,B):
+    return A*x+B
+
+def f_2(x,A,B,C):
+    return A*x*x+B*x+C
+lst=[]
+label=pd.DataFrame(index=day,columns=['label'])
+for i in day:
+    i=str(i)[:10]
+    arrclose=np.array(data.ix[i].close)
+    ema=talib.EMA(arrclose,timeperiod=30)
+    ema=ema[120:]
+    x=range(len(ema))
+    A,B=optimize.curve_fit(f_1,x,ema)[0]
+    if A>0.045:
+        label.ix[i]=1
+    elif abs(A)<=0.045:í
+        label.ix[i]=0
+    else:
+        label.ix[i]=-1
+#%%
+#获取每天前15分钟和前一天后15分钟的数据。
+data_ts=pd.DataFrame(columns=data.columns)
+for j,i in enumerate(day):
+    if j==0:
+        continue
+    i =str(i)[:10]
+    i_last=str(day[j-1])[:10]
+    ts=pd.concat([data.ix[i_last][-15:],data.ix[i][:15]],ignore_index=True)
+    ts.index=[i]*len(ts)
+    ts=ts.apply(lambda x:preprocessing.minmax_scale(x))
+    data_ts=data_ts.append(ts)
+#%%
+#获取当日中午前30分钟和下午开盘前15分钟
+data_ts=pd.DataFrame(columns=data.columns)
+for i in day:
+    i =str(i)[:10]
+    ts=data.ix[i][90:135]
+    ts.index=[i]*len(ts)
+    ts=ts.apply(lambda x:preprocessing.minmax_scale(x))
+    data_ts=data_ts.append(ts)
+    
+
+
+
+
+
+
+
