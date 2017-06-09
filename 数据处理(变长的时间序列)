@@ -1,0 +1,209 @@
+#!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+"""
+Created on Thu May 18 12:08:28 2017
+
+@author: wanjun
+"""
+#%%
+import pandas as pd
+import numpy as np
+import datetime
+from sklearn import preprocessing
+import talib
+#%%
+#增加层次化索引(这个只是尝试着玩)
+#file='/Users/wanjun/Desktop/LSTM模型/bar_2016_zhuli_IF.csv'
+#data=pd.read_csv(file)
+#del data['Unnamed: 0']
+#data['day']=map(lambda x:x[:10],data.time)
+#data.time=data.time.astype(np.datetime64)
+#data.day=data.day.astype(np.datetime64)
+#data.set_index(['day','time'],inplace=True)
+#%%
+file='/Users/wanjun/Desktop/LSTM模型/bar_2016_zhuli_IF.csv'
+data=pd.read_csv(file)
+del data['Unnamed: 0']
+data.time=data.time.astype(np.datetime64)
+data.set_index('time',inplace=True)
+day=data.resample('D').mean().dropna().index
+#%%
+#分析数据
+df_len=pd.DataFrame(index=day,columns=['length'])
+for i in day:
+    i=str(i)[:10]
+    df=data.ix[i]
+    df_len.ix[i].length=len(df)
+#1月4日和1月7日缺失数据比较多，删除1月7日之前的数据
+data=data.ix['2016-01-08':]
+df_len=df_len[4:]
+day=day[4:]
+#%%
+#打标签的方法
+def p(x):
+    dot=1
+    for i in x:
+        dot*=i
+    return dot
+
+def f(x):
+    if x>c:
+        return 1
+    else:
+        return 0
+def g(x):
+    if x>c:
+        return -1
+    else:
+        return 0
+def h(x):
+    count=0
+    for i in x:
+        if i==1:
+            count+=1
+    return count
+global a,b
+c=0    #打标签的阀值
+a=0.0005   #开仓的手续费
+b=0.0010   #平仓的手续费用
+t=15       #预测的未来的时间
+T=60        #时间序列的长度
+def mark_label(data,t):
+    label=pd.DataFrame(index=data.index,columns=range(t+1)[1:])
+    label_final=label.copy()
+    temp=data['close'].copy()   
+    for i in range(t+1)[1:]:
+        label[i]=abs(temp.shift(-i)-temp)-(temp.shift(-i)*b+temp*a)
+        label_final[i][(temp.shift(-i)-temp)>0]=label[i][(temp.shift(-i)-temp)>0].apply(f)
+        label_final[i][(temp.shift(-i)-temp)<0]=label[i][(temp.shift(-i)-temp)<0].apply(g)
+        label_final[i][(temp.shift(-i)-temp)==0]=0
+    return label_final
+def count_label(data):
+    data=data.dropna()
+    label=pd.DataFrame(index=data.index,columns=['label'])
+    label[((data==1).apply(h,axis=1)>=5)]=1
+    label[((data==-1).apply(h,axis=1)>=5)]=-1
+    label.fillna(0,inplace=True)
+    return label
+#窗口归一化
+def standard(data,k):
+    data_big=pd.DataFrame(columns=data.columns)
+    for i in range(len(data)-T+1):
+        start=i
+        end=i+T
+        temp=data[start:end]
+        temp.index=(i+k)*np.ones(T,dtype='int')
+        data_big=data_big.append(temp)
+    return data_big
+
+#增加指标
+def technical_index(data):
+    arrOpen=np.array(data.open)
+    arrClose = np.array(data.close)
+    arrHigh = np.array(data.high)
+    arrLow = np.array(data.low)
+    arrVolume = np.array(data.volume,dtype=np.float)
+    
+    #EMA,RSI指标
+    data['EMA_5min'] = talib.EMA(arrClose, timeperiod=5)
+    data['EMA_10min'] = talib.EMA(arrClose, timeperiod=10)
+    data['EMA_15min'] = talib.EMA(arrClose, timeperiod=15)
+    data['EMA_20min'] = talib.EMA(arrClose, timeperiod=20)
+    data['RSI'] = talib.RSI(arrClose)
+    #data['STOCHRSI_usual'] = talib.STOCHRSI(arrClose)
+    
+    # BOLL-BAND指标
+    BBANDS_usual = talib.BBANDS(arrClose)
+    upperband, middleband, lowerband = BBANDS_usual
+    data['upperband'] = upperband
+    data['middleband'] = middleband
+    data['lowerband'] = lowerband
+    
+    
+    # MACD指标
+    MACD_usual = talib.MACD(arrClose)
+    macd, macdsignal, macdhist = MACD_usual
+    data['macd'] = macd
+    data['macdsignal'] = macdsignal
+    data['macdhist'] = macdhist
+    
+    # KDJ指标
+    KDJ_usual = talib.STOCH(arrHigh, arrLow, arrClose)
+    slowk, slowd = KDJ_usual
+    data['slowk'] = slowk
+    data['slowd'] = slowd
+    
+    # ATR指标
+    ATR_usual   = talib.ATR(arrHigh, arrLow, arrClose)
+    data['ATR'] = ATR_usual
+    
+    # WILLR指标
+    WILLR_usual = talib.WILLR(arrHigh, arrLow, arrClose)
+    data['WILLR'] = WILLR_usual
+    
+    # BOV指标
+    OBV_usual  = talib.OBV(arrClose, arrVolume)
+    data['OBV'] = OBV_usual
+    
+    # SAR指标
+    SAR_usual  = talib.SAR(arrHigh, arrLow)
+    data['SAR'] = SAR_usual
+    
+    # DEMA指标
+    DEMA_usual = talib.DEMA(arrClose)
+    data['DEMA'] = DEMA_usual
+    
+    #MOM指标
+    MOM_usual  = talib.MOM(arrClose)
+    data['MOM'] = MOM_usual
+    return data
+
+#按天打技术指标
+data_index=pd.DataFrame(columns=[u'open', u'high', u'low', u'close', u'volume', u'EMA_5min',
+       u'EMA_10min', u'EMA_15min', u'EMA_20min', u'RSI', u'upperband',
+       u'middleband', u'lowerband', u'macd', u'macdsignal', u'macdhist',
+       u'slowk', u'slowd', u'ATR', u'WILLR', u'OBV', u'SAR', u'DEMA', u'MOM'])
+for i in day:
+    i=str(i)[:10]
+    temp=data.ix[i].copy()
+    temp=technical_index(temp)
+    temp.dropna(inplace=True)
+    data_index=data_index.append(temp)   
+#%%
+#把所有数据按照天分开
+#时间序列的长度T=30
+#预测的长度t=15
+k=0
+label_final=pd.DataFrame(columns=['label'])
+data_big_final=pd.DataFrame(columns=data_index.columns)
+for i in day:
+    i=str(i)[:10]
+    label_raw=mark_label(data_index.ix[i],t)
+    label=count_label(label_raw)
+    label=label[T-1:]
+    temp=data_index[i].ix[:-t].copy()
+    data_big=standard(temp,k)
+    k+=len(data_index.ix[i])-T-t+1
+    label_final=label_final.append(label)
+    data_big_final=data_big_final.append(data_big)
+    
+    
+#将时间序列改为随机长度
+#做归一化处理
+arr=np.random.randint(30,60,size=len(label_final))
+for i in range(len(label_final)):
+    data_big_final.ix[i][arr[i]:]=0
+    data_big_final.ix[i][:arr[i]]=data_big_final.ix[i][:arr[i]].apply(lambda x:preprocessing.minmax_scale(x))
+#保存数据
+label_final.to_csv('data_big_change/data_big/label.csv')
+data_big_final.to_csv('data_big_change/data_big/data_big.csv')
+
+
+    
+
+
+
+
+
+
+

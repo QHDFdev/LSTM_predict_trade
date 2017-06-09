@@ -54,8 +54,8 @@ def on_init(context):
     context.var.count=0
     #创建tensorflow图框架
     global x,y,weights,biases,pred
-    x = tf.placeholder("float", [None, n_steps, n_input])
-    y = tf.placeholder("float", [None, n_classes])
+    x = tf.placeholder("float", [1, n_steps, n_input])
+    y = tf.placeholder("float", [1, n_classes])
 
     # 定义W,B 
     weights = {
@@ -107,21 +107,11 @@ def cut_output(output,length):
     return result    
 
 #由于是变长的时间序列，所以我们需要使用tf.nn.dynamic_rnn
-def RNN(x, weights, biases):
-    #这里GRU是另外一种加了门的RNN，可以看成是LSTM的变体
-    layer=rnn.GRUCell(n_hidden)
-    #layer=rnn.BasicLSTMCell(n_hidden, forget_bias=1.0)
-    #包裹dropout防止过拟和
-    layer=rnn.DropoutWrapper(cell=layer,output_keep_prob=keep_prob)
-    #最后一层不放dropout
-    layer_out=rnn.GRUCell(n_hidden)
-    #拼装成整体
-    #这个地方写成列表的相加会陷入死循环，没有找到原因，所以就用最笨的方法全部写出来，如果要增加层数就直接增加layer
-    layers=rnn.MultiRNNCell(cells=[layer,layer,layer_out])
-    #计算实际长度
+def RNN(x, weights, biases):  
+    layer=tf.contrib.grid_rnn.Grid2BasicLSTMCell(n_hidden,tied=True) 
     length=real_len(x)
     #时间推进
-    outputs,states=tf.nn.dynamic_rnn(cell=layers,inputs=x,dtype=tf.float32,sequence_length=length)
+    outputs,states=tf.nn.dynamic_rnn(cell=layer,inputs=x,dtype=tf.float32,sequence_length=length)
     #输出的outpus进行裁剪
     outputs=cut_output(outputs,length)
     # 输出函数使用的是线性函数

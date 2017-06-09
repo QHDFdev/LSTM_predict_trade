@@ -27,26 +27,24 @@ def on_init(context):
     #解压模型
     context.function.log('init')
     tar=tarfile.open('LSTM.tar.gz')
-    tar.extractall()
+    tar.extractall('model_lstm')
     tar.close()
     context.function.log('解压成功')
 
     #模型的参数 （如果参数改变，则训练的模型也要改变）
-    #平台参数
-    global T
-    T=100 #每天前T分钟收集数据
     #网络参数
-    global n_input,n_steps,n_hidden,n_classes
+    global n_input,n_steps,n_hidden,n_classes,a
     n_input = 24 # 时间序列点的特征数
     n_steps = 60 # 时间序列的长度
     n_hidden = 120 # 隐藏层结点数
     n_classes = 3 # 标签数量
+    a=0.0013      #打标签的依据
     #训练集合的各种指标的最大值和最小值（以此作为归一化的上限和下限）
     global lst_max,lst_min
-    path='lst_max.csv'
-    lst_max=pd.read_csv(path)
-    path='lst_min.csv'
-    lst_min=pd.read_csv(path)
+    path='model_lstm/lst_max.csv'
+    lst_max=pd.read_csv(path,index_col=0)
+    path='model_lstm/lst_min.csv'
+    lst_min=pd.read_csv(path,index_col=0)
     context.function.log('装载训练集最大值成功')
     #每分钟的基础指标 
     context.var.ts=pd.DataFrame(columns=['open','close','high','low','volume','EMA_5min',
@@ -55,6 +53,9 @@ def on_init(context):
        'slowk', 'slowd', 'ATR', 'WILLR', 'OBV', 'SAR', 'DEMA', 'MOM'])
     context.var.pred=[]
     context.var.real=[]
+    context.var.success=0
+    context.var.sum=0
+    context.var.fail=0
     #计数指标
     context.var.count=0
     #创建tensorflow图框架
@@ -73,7 +74,6 @@ def on_init(context):
     #装载模型
     global saver
     saver = tf.train.Saver()
-    context.function.log('装载模型成功')
 #%%
 #自定义函数
 #生成lstm    
@@ -98,7 +98,6 @@ def RNN(x, weights, biases):
     return tf.matmul(outputs[-1], weights['out']) + biases['out']
 #计算指标
 def technical_index(context):
-    context.var.ts
     #EMA,RSI指标
     context.var.ts['EMA_5min'] = talib.EMA(np.array(context.var.ts.close), timeperiod=5)
     context.var.ts['EMA_10min'] = talib.EMA(np.array(context.var.ts.close), timeperiod=10)
@@ -108,7 +107,7 @@ def technical_index(context):
     STOCHRSI_usual = talib.STOCHRSI(np.array(context.var.ts.close))
     
     # BOLL-BAND指标
-    BBANDS_usual = talib.BBANDS(np.array(STOCHRSI_usual.close))
+    BBANDS_usual = talib.BBANDS(np.array(context.var.ts.close))
     upperband, middleband, lowerband = BBANDS_usual
     context.var.ts['upperband'] = upperband
     context.var.ts['middleband'] = middleband
@@ -157,20 +156,23 @@ def technical_index(context):
 #数据标准化：归一化
 def standard(temp):
     def f(x,max,min):
-        for j,i in enumerate(x):
-            if i>=max:
-                x[j]=1
-            elif i<=min:
-                x[j]=0
-            else:
-                x[j]=float((i-min)/(max-min))
-            return x
+        if x>=max:
+            x=1
+        elif x<=min:
+            x=0
+        else:
+            x=float((x-min)/(max-min))
+        return x
     for char in temp.columns:
-        temp[char]=temp[char].apply(lambda x: f(x,lst_max.ix[char],lst_min.ix[char]))
+        #for j,i in enumerate(temp[char]):
+        temp[char]=temp[char].apply(lambda x: f(x,float(lst_max.ix[char]),float(lst_min.ix[char])))
+            #temp[char][j]=f(i,lst_max.ix[char],lst_min.ix[char])
+    return temp
 #提取时间序列函数
 def get_ts(temp):
     lst=[]
-    return lst.append(temp[-n_steps:].values.tolist())
+    lst.append(temp[-n_steps:].values.tolist())
+    return lst
 #转换预测值为标签
 def convert(predict):
     n=np.argmax(predict)
@@ -179,20 +181,21 @@ def convert(predict):
     elif n==1:
         return "观望"
     else:
-        return "可买跌"        
+        return "可买跌"
+#计算实际15分钟内的涨跌幅
+def real(ts,a):
+    ts=ts.values.tolist()
+    n=ts[0]
+    for i in ts[1:]:
+        if (i-n)/n>=a:
+            return 1
+        elif (i-n)/n<-a:
+            return -1
+    return 0
 #%%       
 def on_start(context):
     context.function.log(u'LSTM start')
     context.var.beginTrace = True
-    #清理每天的数据
-    context.var.ts=pd.DataFrame(columns=['open','close','high','low','volume','EMA_5min',
-       'EMA_10min', 'EMA_15min', 'EMA_20min', 'RSI', 'upperband',
-       'middleband', 'lowerband', 'macd', 'macdsignal', 'macdhist',
-       'slowk', 'slowd', 'ATR', 'WILLR', 'OBV', 'SAR', 'DEMA', 'MOM'])
-    context.var.pred=[]
-    context.var.real=[]
-    context.var.count=0
-    context.function.log(u'clear data')
 def on_stop(context):
     context.function.log(u'LSTM stoped')
     context.var.beginTrace = False
@@ -202,8 +205,6 @@ def on_tick(context):
 def on_bar(context):
     if not context.var.beginTrace:
         return
-    context.var.count+=1
-    context.function.log(context.var.count)
     #获取当前时刻的bar数据
     bar=context.var.bar
     #组合得到新的ts
@@ -215,21 +216,52 @@ def on_bar(context):
     df['volume']=bar.volume
     context.var.ts=context.var.ts.append(df,ignore_index=True)
     technical_index(context)
-    temp=context.var.ts
+    temp=context.var.ts.copy()
     temp['close']=temp.close.diff()
     temp['open']=temp.open.diff()
     temp['high']=temp.high.diff()
     temp['low']=temp.low.diff()
     temp=temp.dropna()
-    if len(temp)>n_steps:
+    if len(temp)>=n_steps:
+        context.var.count+=1
         with tf.Session() as sess:
-            saver.restore(sess, "lstm_model.ckpt")
-            temp.clsoe.diff()
+            saver.restore(sess, "model_lstm/lstm_model.ckpt")
             ts=get_ts(standard(temp))
             predict=sess.run(pred,feed_dict={x: ts})  
         pre=convert(predict)
-        context.function.predict({'预测状态':pre})   
-    
+        context.var.pred.append(pre)     
+        context.function.predict({'预测操作':pre})
+        if context.var.count>=16:
+            temp=context.var.ts['close'][-16:].copy()
+            b=real(temp,a)
+            context.var.real.append(b)
+            if context.var.pred[-16]=='可买涨' and b==1:
+                context.function.log('预测成功')
+                context.var.sum+=1
+                context.var.success+=1
+            elif context.var.pred[-16]=='可买跌' and b==-1:
+                context.function.log('预测成功')
+                context.var.sum+=1
+                context.var.success+=1
+            elif context.var.pred[-16]=='可买涨' and b==-1:
+                context.function.log('预测失败')
+                context.var.sum+=1
+                context.var.fail+=1
+            elif context.var.pred[-16]=='可买跌' and b==1:
+                context.function.log('预测失败')
+                context.var.sum+=1
+                context.var.fail+=1
+            elif context.var.pred[-16]=='可买涨' and b==0:
+                context.function.log('预测失败')
+                context.var.sum+=1
+                context.var.fail+=1
+            elif context.var.pred[-16]=='可买跌' and b==0:
+                context.function.log('预测失败')
+                context.var.sum+=1
+                context.var.fail+=1  
+            if context.var.sum!=0:
+                true=float(context.var.success)/float(context.var.sum)
+                context.function.log('当前准确率为：'+str(true))
 def on_order(context):
 	# my_file_name = 'test.file'
 	# with open('myfile1', my_file_name) as f:
@@ -238,5 +270,14 @@ def on_order(context):
 	pass
 
 def on_newday(context):
-	pass
+	    #清理每天的数据
+    context.var.success=0
+    context.var.sum=0
+    context.var.fail=0
+    if len(context.var.ts)>200:
+        context.var.ts=context.var.ts[-200:]
+    context.var.pred=[]
+    context.var.real=[]
+    context.var.count=0
+    context.function.log(u'clear data')
 	# context.var.myvar += '当子夜过后，平台会调用这个函数'

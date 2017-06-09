@@ -14,15 +14,10 @@ import pandas as pd
 import numpy as np
 #%%
 #导入数据
-#data_big是窗口归一化之后的所有时间序列
-#data_big是和T有关系的，T的改变也需要改变data_big的值
 file_data='/Users/wanjun/Desktop/LSTM模型/code/data.csv'
 file_label='/Users/wanjun/Desktop/LSTM模型/code/label.csv'
-file_data_big='/Users/wanjun/Desktop/LSTM模型/code/data_big.csv'
 data=pd.read_csv(file_data,index_col=0,parse_dates=True)
 label=pd.read_csv(file_label,index_col=0,parse_dates=True)
-data_big=pd.read_csv(file_data_big,index_col=0)
-
 
 #%%
 #划分训练集合和测试集合
@@ -33,17 +28,16 @@ data_big=pd.read_csv(file_data_big,index_col=0)
 #%%
 #定义函数，随机抓取batch_size个训练数据
 #label_finl是data的标签数据
-def get_train_data(data_big,label):
+def get_train_data(data,label):
     T=n_steps
     lst=[]
     batch_x=[]
     batch_y=[]
-    m=len(data_big.index.unique())
+    m=len(data)-T
     lst=np.random.choice(range(m),size=batch_size,replace=True)
     #lst=np.random.randint(0,m,size=batch_size)
     for i in lst:
-        batch_x.append(data_big.ix[i].values.tolist())
-        #batch_x.append(data.ix[i:i+T].values.tolist())
+        batch_x.append(data.ix[i:i+T].values.tolist())
         if label.ix[i+T-1]['label']==1:
             batch_y.append([1,0,0])
         elif label.ix[i+T-1]['label']==0:
@@ -51,16 +45,15 @@ def get_train_data(data_big,label):
         else:
             batch_y.append([0,0,1])
     return batch_x,batch_y
-def get_test_data(data_big,label,n_test):
+def get_test_data(data,label,n_test):
     T=n_steps
     lst=[]
     batch_x=[]
     batch_y=[]
-    m=len(data_big.index.unique())
+    m=len(data)-T
     lst=np.random.choice(range(m),size=n_test,replace=True)
     for i in lst:
-        batch_x.append(data_big.ix[i].values.tolist())
-        #batch_x.append(data.ix[i:i+T].values.tolist())
+        batch_x.append(data.ix[i:i+T].values.tolist())
         if label.ix[i+T-1]['label']==1:
             batch_y.append([1,0,0])
         elif label.ix[i+T-1]['label']==0:
@@ -70,37 +63,34 @@ def get_test_data(data_big,label,n_test):
     return batch_x,batch_y
 #划分测试集与训练集
 #data,a为划分的比列
-def data_test_train(data_big,a):
-    m=int(len(data_big.index.unique())*a)
-    data_train=data_big.ix[:m]
-    data_test=data_big.ix[m+1:]
-    return data_train,data_test,m
-def label_test_train(label,m):
-    m+=n_steps
+def data_test_train(data,a):
+    m=int(len(data)*a)
+    data_train=data[:m]
+    data_test=data[m:]
+    return data_train,data_test
+def label_test_train(label,a):
+    m=int(len(data)*a)
     label_train=label[:m]
     label_test=label[m:]
     return label_train,label_test
 #%%
 #定义参数
 learning_rate = 0.001       #学习率
-training_iters = 1000000     #最大迭代次数
+training_iters = 1000  #最大迭代次数
 batch_size =  500          #minibatch选择的大小
 display_step = 100
 
 #网络参数
 n_input = 24 # 时间序列点的特征数
-n_steps = 60 # 时间序列的长度
+n_steps = 30 # 时间序列的长度
 n_hidden = 300  # 隐藏层结点数
 n_classes = 3 # 标签数量
-a=1         #划分比列（训练集合测试集合）
+a=0.9         #划分比列（训练集合测试集合）
 erro_lst=[]     #损失函数的值
 #划分训练集合和测试集合
 #划分label
-data_train,data_test,m=data_test_train(data_big,a)
-label_train,label_test=label_test_train(label,m)
-data_test=data_test.ix[m+n_steps:]
-data_test.index-=(m+n_steps)
-
+data_train,data_test=data_test_train(data,a)
+label_train,label_test=label_test_train(label,a)
 #%%
 # 生成tf图
 x = tf.placeholder("float", [None, n_steps, n_input])
@@ -122,14 +112,14 @@ def RNN(x, weights, biases):
     # Required shape: 'n_steps' tensors list of shape (batch_size, n_input)
 
     # Unstack to get a list of 'n_steps' tensors of shape (batch_size, n_input)
-    x = tf.unstack(x, n_steps, 1)
-
+    #x = tf.unstack(x, n_steps, 1)
     # Define a lstm cell with tensorflow
-    lstm_cell = rnn.BasicLSTMCell(n_hidden, forget_bias=1)
-
+    #lstm_cell = tf.contrib.grid_rnn.Grid2GRUCell(n_hidden,tied=True)
+    lstm_cell=rnn.GRUCell(n_hidden)
+    #lstm_cell = rnn.BasicLSTMCell(n_hidden, forget_bias=1)
     # Get lstm cell output
-    outputs, states = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
-
+    #outputs, states = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
+    outputs,states=tf.nn.dynamic_rnn(cell=lstm_cell,inputs=x,dtype=tf.float32)
     # Linear activation, using rnn inner loop last output
     # 输出函数使用的是线性函数
     # 时间序列的最后一个作为输出
@@ -173,10 +163,10 @@ with tf.Session() as sess:
     print("Optimization Finished!")
     #保存模型
     saver = tf.train.Saver()
-    saver.save(sess,"model_window/lstm_model.ckpt")
+    saver.save(sess,"model/lstm_model.ckpt")
 #%%
     #测试的数量
-    n_test=len(data_test.index.unique())
+    n_test=len(data_test)
     #test_len = 128
     #test_data = mnist.test.images[:test_len].reshape((-1, n_steps, n_input))
     #test_label = mnist.test.labels[:test_len]

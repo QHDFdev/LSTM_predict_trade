@@ -81,7 +81,7 @@ n_hidden = 240  # 隐藏层结点数
 n_classes = 3 # 标签数量
 keep_prob=0.7 #随机选择神经元比例
 m=2           #隐藏层的个数
-a=0.8         #划分比列（训练集合测试集合）
+a=0.9         #划分比列（训练集合测试集合）
 erro_lst=[]     #损失函数的值
 #划分训练集合和测试集合
 #划分label
@@ -145,10 +145,8 @@ def RNN(x, weights, biases):
     # 输出函数使用的是线性函数
     # 时间序列的最后一个作为输出
     return tf.matmul(outputs, weights['out']) + biases['out']
-weight=tf.constant([[1,0,0],[0,0.25,0],[0,0,1]])
+
 pred = RNN(x, weights, biases)
-#按照分配的权重重新定义pred
-pred=tf.matmul(pred,weight)
 
 # Define loss and optimizer
 cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pred, labels=y))
@@ -180,7 +178,7 @@ with tf.Session() as sess:
     print("Optimization Finished!")
     #保存模型
     saver = tf.train.Saver()
-    saver.save(sess,"model_ts_change_1/lstm_model.ckpt")
+    saver.save(sess,"model_ts_change/lstm_model.ckpt")
 #%%
     #测试的数量
     n_test=len(data_test.index.unique())

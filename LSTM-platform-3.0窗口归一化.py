@@ -22,11 +22,12 @@ from sklearn import preprocessing
 import time
 import datetime
 from collections import defaultdict
+
 #%%
 def on_init(context):    
     #解压模型
     context.function.log('init')
-    tar=tarfile.open('model_window.tar.gz')
+    tar=tarfile.open('model_big.tar.gz')
     tar.extractall()
     tar.close()
     context.function.log('解压成功')
@@ -35,8 +36,8 @@ def on_init(context):
     #网络参数
     global n_input,n_steps,n_hidden,n_classes
     n_input = 24 # 时间序列点的特征数
-    n_steps = 60 # 时间序列的长度
-    n_hidden = 300 # 隐藏层结点数
+    n_steps = 30 # 时间序列的长度
+    n_hidden = 240 # 隐藏层结点数
     n_classes = 3 # 标签数量
     #每分钟的基础指标 
     context.var.ts=pd.DataFrame(columns=['open','close','high','low','volume','EMA_5min',
@@ -167,19 +168,27 @@ def convert(predict):
         return "可买跌"
 #判断预测的实际效果
 def real(context,p):
+    lst=[]
     n=context.var.count
-    ts=context.var.history.iloc[n:n+30]
+    ts=context.var.history.iloc[n:n+15]
     m=ts.iloc[0]['close']
     if p=='观望':
         return 0
+    for i in ts['close']:
+        change=i*(1-0.0010)-m*(1+0.0005)
+        change1=m*(1-0.0005)-i*(1+0.0010)
+        if change>0 and i>m:
+            lst.append(1)
+        elif change1>0 and i<m:
+            lst.append(-1)
+        else:
+            lst.append(0)
+    lst=np.array(lst)
+    if (lst==1).sum()>0 and p=='可买涨':
+        return 1
+    elif (lst==-1).sum()>0 and p=='可买跌':
+        return 1
     else:
-        for i in ts['close']:
-            change=i*(1-0.00092)-m*(1+0.00024)
-            change1=m*(1-0.00024)-i*(1+0.00092)
-            if change>0 and p=='可买涨' and i>m:
-                return 1
-            elif change1>0 and p=='可买跌' and i<m:
-                return 1
         return -1
 #%%       
 def on_start(context):
@@ -225,11 +234,11 @@ def on_bar(context):
     context.function.log(context.var.count)
     if len(temp)>=n_steps:
         with tf.Session() as sess:
-            saver.restore(sess, "model_window/lstm_model.ckpt")
+            saver.restore(sess, "model_big_2/lstm_model.ckpt")
             ts=get_ts(standard(temp))
             predict=sess.run(pred,feed_dict={x: ts})  
         p=convert(predict)
-        accur=real(context,p)
+        accur=real(context,p)   #   预测正确返回1，预测错误返回-1 不关心的预测返回0
         context.var.pred.append(p)
         context.var.real.append(accur)
         lst=np.array(context.var.real)

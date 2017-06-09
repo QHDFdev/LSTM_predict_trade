@@ -27,19 +27,18 @@ from collections import defaultdict
 def on_init(context):    
     #解压模型
     context.function.log('init')
-    tar=tarfile.open('model_ts_change.tar.gz')
+    tar=tarfile.open('model_big.tar.gz')
     tar.extractall()
     tar.close()
     context.function.log('解压成功')
 
     #模型的参数 （如果参数改变，则训练的模型也要改变）
     #网络参数
-    global n_input,n_steps,n_hidden,n_classes,keep_prob
+    global n_input,n_steps,n_hidden,n_classes
     n_input = 24 # 时间序列点的特征数
-    n_steps = 60 # 时间序列的长度
+    n_steps = 30 # 时间序列的长度
     n_hidden = 240 # 隐藏层结点数
     n_classes = 3 # 标签数量
-    keep_prob=0.7 #随机选择神经元比例
     #每分钟的基础指标 
     context.var.ts=pd.DataFrame(columns=['open','close','high','low','volume','EMA_5min',
        'EMA_10min', 'EMA_15min', 'EMA_20min', 'RSI', 'upperband',
@@ -68,65 +67,28 @@ def on_init(context):
     #装载模型
     global saver
     saver = tf.train.Saver()
-    #当天的真实数据
-    context.var.history=None
-    #仓位的状态和指标
-    context.var.position=0
-    context.var.buy=None
-    context.var.short=None
-    global a,b
-    a=0.0005   #开仓的手续费
-    b=0.0010   #平仓的手续费用
-    global loss,profit
-    profit=0
-    loss=-10
 #%%
 #自定义函数
-#生成lstm
-def real_len(x):
-    #按照第三维度，全部等于零的记录为0,其余都是有正数的，所以记为1
-    dense_sign = tf.sign(tf.reduce_max(tf.abs(x),reduction_indices=2))
-    #全部相加，就能得到实际的长度
-    length = tf.reduce_sum(input_tensor=dense_sign, reduction_indices=1)
-    #转换函数，转换dtype
-    length = tf.cast(length, tf.int32)
-    #注意这里得到的length实际上是一个(batch_size)长度的向量
-    return length
-
-def cut_output(output,length):
-    #length 输入时间序列的实际长度
-    batch_size = tf.shape(output)[0]
-    max_length = int(output.get_shape()[1])
-    output_size = int(output.get_shape()[2])
-    #将每个batchsize的最后一个output所在的指标保存
-    index = tf.range(start=0, limit=batch_size)*max_length + (length-1) 
-    #先将输出展平，然后输出为x*out_put_size
-    flat = tf.reshape(output, [-1,output_size]) 
-    #根据实际长度来选择output
-    result = tf.gather(flat, index) 
-    return result    
-
-#由于是变长的时间序列，所以我们需要使用tf.nn.dynamic_rnn
+#生成lstm    
 def RNN(x, weights, biases):
-    #这里GRU是另外一种加了门的RNN，可以看成是LSTM的变体
-    layer=rnn.GRUCell(n_hidden)
-    #layer=rnn.BasicLSTMCell(n_hidden, forget_bias=1.0)
-    #包裹dropout防止过拟和
-    layer=rnn.DropoutWrapper(cell=layer,output_keep_prob=keep_prob)
-    #最后一层不放dropout
-    layer_out=rnn.GRUCell(n_hidden)
-    #拼装成整体
-    #这个地方写成列表的相加会陷入死循环，没有找到原因，所以就用最笨的方法全部写出来，如果要增加层数就直接增加layer
-    layers=rnn.MultiRNNCell(cells=[layer,layer,layer_out])
-    #计算实际长度
-    length=real_len(x)
-    #时间推进
-    outputs,states=tf.nn.dynamic_rnn(cell=layers,inputs=x,dtype=tf.float32,sequence_length=length)
-    #输出的outpus进行裁剪
-    outputs=cut_output(outputs,length)
+
+    # Prepare data shape to match `rnn` function requirements
+    # Current data input shape: (batch_size, n_steps, n_input)
+    # Required shape: 'n_steps' tensors list of shape (batch_size, n_input)
+
+    # Unstack to get a list of 'n_steps' tensors of shape (batch_size, n_input)
+    x = tf.unstack(x, n_steps, 1)
+
+    # Define a lstm cell with tensorflow
+    lstm_cell = rnn.BasicLSTMCell(n_hidden, forget_bias=1.0)
+
+    # Get lstm cell output
+    outputs, states = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
+
+    # Linear activation, using rnn inner loop last output
     # 输出函数使用的是线性函数
     # 时间序列的最后一个作为输出
-    return tf.matmul(outputs, weights['out']) + biases['out']
+    return tf.matmul(outputs[-1], weights['out']) + biases['out']
 #计算指标
 def technical_index(context):
     #EMA,RSI指标
@@ -202,64 +164,31 @@ def convert(predict):
         return "观望"
     else:
         return "可买跌"
-    
-def strategy(context,p):
-    bar=context.var.bar
-    #9点45之前不进行交易
-    if bar.datetime.hour==9 and bar.datetime.minute<45:
-        return
-    #两点之后不开仓
-    if context.var.position==0 and (bar.datetime.hour<14):
-        if p=='可买涨':
-            context.function.buy(bar.close)
-            context.var.buy=bar.close
-            context.var.position=1
-            context.function.log('开仓买涨')
-        elif p=='可买跌':
-            context.function.short(bar.close)
-            context.var.short=bar.close
-            context.var.position=-1
-            context.function.log('开仓买跌')
-    elif context.var.position==1:
-        if bar.datetime.hour==14 and bar.datetime.minute>=55:
-            context.function.sell(bar.close)
-            context.var.position=0
-            context.var.buy=None
-            context.function.log('强制平仓（买涨）')
+#判断预测的实际效果
+def real(context):
+    p=context.var.pred[-30]
+    lst=[]
+    n=context.var.count
+    ts=context.var.ts.iloc[-30:]
+    m=ts.iloc[0]['close']
+    if p=='观望':
+        return 0
+    for i in ts['close']:
+        change=i*(1-0.00094)-m*(1+0.00024)
+        change1=m*(1-0.00024)-i*(1+0.00094)
+        if change>0 and i>m:
+            lst.append(1)
+        elif change1>0 and i<m:
+            lst.append(-1)
         else:
-            change=bar.close*(1-b)-context.var.buy*(1+a)
-            if change >profit:
-                context.function.sell(bar.close)
-                context.var.position=0
-                context.function.log('强制平仓（买跌）')
-                context.var.buy=None
-                context.function.log(change)
-            elif change<loss:
-                context.function.sell(bar.close)
-                context.var.position=0
-                context.function.log('止损平仓（买涨）')
-                context.var.buy=None
-                context.function.log(change)
-    elif context.var.position==-1:
-        if bar.datetime.hour==14 and bar.datetime.minute>=55:
-            context.function.cover(bar.close)
-            context.var.position=0
-            context.var.short=None
-            context.function.log('买跌平仓')
-        else:
-            change=context.var.short*(1-a)-bar.close*(1+b)
-            if change >profit:
-                context.function.cover(bar.close)
-                context.var.position=0
-                context.function.log('买跌平仓')
-                context.var.short=None
-                context.function.log(change)
-            elif change<loss:
-                context.function.cover(bar.close)
-                context.var.position=0
-                context.function.log('止损平仓（买跌）')
-                context.var.short=None
-                context.function.log(change)
+            lst.append(0)
+    lst=np.array(lst)
+    if (lst==1).sum()>0 and p=='可买涨':
+        return 1
+    elif (lst==-1).sum()>0 and p=='可买跌':
+        return 1
+    else:
+        return -1
 #%%       
 def on_start(context):
     context.function.log(u'LSTM start')
@@ -289,11 +218,17 @@ def on_bar(context):
     context.function.log(context.var.count)
     if len(temp)>=n_steps:
         with tf.Session() as sess:
-            saver.restore(sess, "model_ts_change/lstm_model.ckpt")
+            saver.restore(sess, "model_big_2/lstm_model.ckpt")
             ts=get_ts(standard(temp))
             predict=sess.run(pred,feed_dict={x: ts})  
         p=convert(predict)
-        strategy(context,p)
+        if len(context.var.pred)>=30:
+            accur=real(context)   #   预测正确返回1，预测错误返回-1 不关心的预测返回0
+            context.var.real.append(accur)
+        context.var.pred.append(p)
+        lst=np.array(context.var.real)
+        rate=(lst==1).sum()/float((lst!=0).sum())
+        context.function.predict({'预测操作':p,'正确率':rate})
     #计数
     context.var.count+=1   
 def on_order(context):
@@ -310,10 +245,10 @@ def on_newday(context):
     context.var.fail=0
     if len(context.var.ts)>200:
         context.var.ts=context.var.ts[-200:]
-    if len(context.var.pred)>100:
-        context.var.pred=context.var.pred[-100:]
-    if len(context.var.real)>100:
-        context.var.real=context.var.real[-100:]
+    if len(context.var.pred)>50:
+        context.var.pred=context.var.pred[-50:]
+    if len(context.var.real)>50:
+        context.var.real=context.var.real[-50:]
     context.var.count=0
     context.function.log(u'clear data') 
 	# context.var.myvar += '当子夜过后，平台会调用这个函数'

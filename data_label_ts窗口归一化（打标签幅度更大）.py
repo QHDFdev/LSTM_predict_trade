@@ -70,12 +70,12 @@ def count_label(data):
     return label
 #%%
 # 导入原始数据数据
-file='/Users/wanjun/Desktop/LSTM模型/data/data_2017.csv'
+file='/Users/wanjun/Desktop/LSTM模型/data/data_train.csv'
 data=pd.read_csv(file,index_col=0,parse_dates=True)
 #%%
 #参数设置
 global a,b
-c=0    #打标签的阀值
+c=2   #打标签的阀值(去掉手续费后还涨了两个点)
 a=0.00024   #开仓的手续费
 b=0.00092   #平仓的手续费用
 t=30        #未来t分钟内都打标签
@@ -223,7 +223,7 @@ for i in range(len(data)-T+1):
 #%%
 #保存数据
 #data.to_csv('data.csv')
-label_count.to_csv('label.csv')
-data_big.to_csv('data_big.csv')
+label_count.to_csv('data1/label.csv')
+data_big.to_csv('data1/data_big.csv')
 #lst_max.to_csv('lst_max.csv')
 #lst_min.to_csv('lst_min.csv')

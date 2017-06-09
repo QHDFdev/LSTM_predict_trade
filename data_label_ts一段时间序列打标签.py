@@ -7,7 +7,6 @@ Created on Wed Apr 26 17:46:44 2017
 打标签
 t分钟内的收盘价比此时刻的收盘价
 总共有三种标签
-窗口归一化操作
 
 """
 #%%
@@ -65,13 +64,13 @@ def mark_label(data,t):
 
 def count_label(data):
     label=pd.DataFrame(index=data.index,columns=['label'])
-    label[((data==1).apply(h,axis=1)>=10)]=1
-    label[((data==-1).apply(h,axis=1)>=10)]=-1
+    label[((data==1).apply(h,axis=1)>=5)]=1
+    label[((data==-1).apply(h,axis=1)>=5)]=-1
     return label
 #%%
 # 导入原始数据数据
 file='/Users/wanjun/Desktop/LSTM模型/data/data_2017.csv'
-data=pd.read_csv(file,index_col=0,parse_dates=True)
+data=pd.read_csv(file,index_col='datetime',parse_dates=True)
 #%%
 #参数设置
 global a,b
@@ -79,14 +78,16 @@ c=0    #打标签的阀值
 a=0.00024   #开仓的手续费
 b=0.00092   #平仓的手续费用
 t=30        #未来t分钟内都打标签
-T=60        #时间序列窗口的长度
 size=len(data)   #选择数据集的大小
 #%%
 #计算标签
 label=mark_label(data,t)
 label=label.dropna()
-label_count=count_label(label)
-label_count.fillna(0,inplace=True)
+#选择第t分钟的打标签
+for i in range(t+1)[1:]:
+    if i!=t:
+        del label[i]
+label.columns=['label']
 #%%
 #增加指标
 arrOpen=np.array(data.open)
@@ -203,27 +204,14 @@ data=data.dropna()
 data=data[:-t]
 m=len(label)-len(data)
 label=label[m:]
-label_count=label_count[m:]
-print (label_count==0).sum()/float(len(label_count))
 #%%存取数据
 lst_max,lst_min=train_index_max_min(data)
 lst_max=pd.DataFrame(lst_max,index=lst_max.index,columns=['number'])
 lst_min=pd.DataFrame(lst_min,index=lst_min.index,columns=['number'])
 data=data[-size:]
 label=label[-size:]
-#%%
-#归一化操作
-data_big=pd.DataFrame(columns=data.columns)
-for i in range(len(data)-T+1):
-    start=i
-    end=i+T
-    temp=data[start:end].apply(lambda x:preprocessing.minmax_scale(x))
-    temp.index=i*np.ones(T,dtype='int')
-    data_big=data_big.append(temp)
-#%%
-#保存数据
-#data.to_csv('data.csv')
-label_count.to_csv('label.csv')
-data_big.to_csv('data_big.csv')
-#lst_max.to_csv('lst_max.csv')
-#lst_min.to_csv('lst_min.csv')
+data=data.apply(lambda x:preprocessing.minmax_scale(x))
+data.to_csv('data.csv')
+label.to_csv('label.csv')
+lst_max.to_csv('lst_max.csv')
+lst_min.to_csv('lst_min.csv')

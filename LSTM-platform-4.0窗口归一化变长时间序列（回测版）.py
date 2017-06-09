@@ -70,16 +70,6 @@ def on_init(context):
     saver = tf.train.Saver()
     #当天的真实数据
     context.var.history=None
-    #仓位的状态和指标
-    context.var.position=0
-    context.var.buy=None
-    context.var.short=None
-    global a,b
-    a=0.0005   #开仓的手续费
-    b=0.0010   #平仓的手续费用
-    global loss,profit
-    profit=0
-    loss=-10
 #%%
 #自定义函数
 #生成lstm
@@ -202,68 +192,49 @@ def convert(predict):
         return "观望"
     else:
         return "可买跌"
-    
-def strategy(context,p):
-    bar=context.var.bar
-    #9点45之前不进行交易
-    if bar.datetime.hour==9 and bar.datetime.minute<45:
-        return
-    #两点之后不开仓
-    if context.var.position==0 and (bar.datetime.hour<14):
-        if p=='可买涨':
-            context.function.buy(bar.close)
-            context.var.buy=bar.close
-            context.var.position=1
-            context.function.log('开仓买涨')
-        elif p=='可买跌':
-            context.function.short(bar.close)
-            context.var.short=bar.close
-            context.var.position=-1
-            context.function.log('开仓买跌')
-    elif context.var.position==1:
-        if bar.datetime.hour==14 and bar.datetime.minute>=55:
-            context.function.sell(bar.close)
-            context.var.position=0
-            context.var.buy=None
-            context.function.log('强制平仓（买涨）')
+#判断预测的实际效果
+def real(context,p):
+    lst=[]
+    n=context.var.count
+    ts=context.var.history.iloc[n:n+60]
+    m=ts.iloc[0]['close']
+    if p=='观望':
+        return 0
+    for i in ts['close']:
+        change=i*(1-0.0010)-m*(1+0.0005)
+        change1=m*(1-0.0005)-i*(1+0.0010)
+        if change>0 and i>m:
+            lst.append(1)
+        elif change1>0 and i<m:
+            lst.append(-1)
         else:
-            change=bar.close*(1-b)-context.var.buy*(1+a)
-            if change >profit:
-                context.function.sell(bar.close)
-                context.var.position=0
-                context.function.log('强制平仓（买跌）')
-                context.var.buy=None
-                context.function.log(change)
-            elif change<loss:
-                context.function.sell(bar.close)
-                context.var.position=0
-                context.function.log('止损平仓（买涨）')
-                context.var.buy=None
-                context.function.log(change)
-    elif context.var.position==-1:
-        if bar.datetime.hour==14 and bar.datetime.minute>=55:
-            context.function.cover(bar.close)
-            context.var.position=0
-            context.var.short=None
-            context.function.log('买跌平仓')
-        else:
-            change=context.var.short*(1-a)-bar.close*(1+b)
-            if change >profit:
-                context.function.cover(bar.close)
-                context.var.position=0
-                context.function.log('买跌平仓')
-                context.var.short=None
-                context.function.log(change)
-            elif change<loss:
-                context.function.cover(bar.close)
-                context.var.position=0
-                context.function.log('止损平仓（买跌）')
-                context.var.short=None
-                context.function.log(change)
+            lst.append(0)
+    lst=np.array(lst)
+    if (lst==1).sum()>0 and p=='可买涨':
+        return 1
+    elif (lst==-1).sum()>0 and p=='可买跌':
+        return 1
+    else:
+        return -1
 #%%       
 def on_start(context):
     context.function.log(u'LSTM start')
     context.var.beginTrace = True
+     #获取当前时刻的时间和交易日期
+    datetime,date = context.function.get_time()
+    #回测。获取当天历史数据
+    ts=pd.DataFrame(columns=['open','close','high','low','volume'])
+    df=pd.DataFrame(np.random.randn(1,5),columns=['open','close','high','low','volume'])
+    data = context.function.get_market_data(datetime)
+    for j in data:
+        df.open=j['open']
+        df.close=j['close']
+        df.high=j['high']
+        df.low=j['low']
+        df.volume=j['volume']
+        ts=ts.append(df,ignore_index=True)
+    context.var.history=ts
+    context.function.log('回测：成功获取当天历史数据')
 def on_stop(context):
     context.function.log(u'LSTM stoped')
     context.var.beginTrace = False
@@ -293,7 +264,12 @@ def on_bar(context):
             ts=get_ts(standard(temp))
             predict=sess.run(pred,feed_dict={x: ts})  
         p=convert(predict)
-        strategy(context,p)
+        accur=real(context,p)   #   预测正确返回1，预测错误返回-1 不关心的预测返回0
+        context.var.pred.append(p)
+        context.var.real.append(accur)
+        lst=np.array(context.var.real)
+        rate=(lst==1).sum()/float((lst!=0).sum())
+        context.function.predict({'预测操作':p,'预测是否正确':accur,'正确率':rate})
     #计数
     context.var.count+=1   
 def on_order(context):
@@ -310,10 +286,23 @@ def on_newday(context):
     context.var.fail=0
     if len(context.var.ts)>200:
         context.var.ts=context.var.ts[-200:]
-    if len(context.var.pred)>100:
-        context.var.pred=context.var.pred[-100:]
-    if len(context.var.real)>100:
-        context.var.real=context.var.real[-100:]
+    context.var.pred=[]
+    context.var.real=[]
     context.var.count=0
-    context.function.log(u'clear data') 
+    context.function.log(u'clear data')
+     #获取当前时刻的时间和交易日期
+    datetime,date = context.function.get_time()
+    #回测。获取当天历史数据
+    ts=pd.DataFrame(columns=['open','close','high','low','volume'])
+    df=pd.DataFrame(np.random.randn(1,5),columns=['open','close','high','low','volume'])
+    data = context.function.get_market_data(datetime)
+    for j in data:
+        df.open=j['open']
+        df.close=j['close']
+        df.high=j['high']
+        df.low=j['low']
+        df.volume=j['volume']
+        ts=ts.append(df,ignore_index=True)
+    context.var.history=ts
+    context.function.log('回测：成功获取当天历史数据')
 	# context.var.myvar += '当子夜过后，平台会调用这个函数'
